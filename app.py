@@ -25,7 +25,7 @@ st.set_page_config(
 BASE_URL = "https://www.googleapis.com/youtube/v3"
 KST = timezone(timedelta(hours=9))
 
-# 불용어(분석에 의미가 적은 단어들 제거)
+# 분석에 큰 의미가 없는 단어들(불용어)
 DEFAULT_STOPWORDS = {
     "영상", "동영상", "브이로그", "vlog",
     "the", "a", "to", "of", "in", "on", "for", "and", "is", "are", "with", "from",
@@ -45,7 +45,7 @@ TOKEN_PATTERN = re.compile(r"[A-Za-z가-힣]+")
 # -----------------------------
 def load_api_key():
     """
-    Streamlit secrets > 환경변수(YOUTUBE_API_KEY) 순서로 로드.
+    Streamlit secrets > OS 환경변수(YOUTUBE_API_KEY) 순서로 로드.
     둘 다 없으면 빈 문자열 반환.
     """
     key_from_secrets = st.secrets.get("YOUTUBE_API_KEY", None)
@@ -64,14 +64,15 @@ def yt_get(path, params, sleep=0.0):
     YouTube Data API GET 래퍼.
     - API 키 주입
     - 간단 쿼터 보호용 sleep
-    - 오류시 RuntimeError로 올림
+    - 오류 시 RuntimeError 발생
     """
     if not API_KEY:
         raise RuntimeError(
             "API 키가 없습니다. Streamlit Cloud의 'Manage app → Secrets'에 "
-            'YOUTUBE_API_KEY = "실제키" 형식으로 등록하거나, '
+            'YOUTUBE_API_KEY = "실제_API_KEY" 형식으로 등록하거나, '
             "로컬에서는 OS 환경변수 YOUTUBE_API_KEY를 설정하세요."
         )
+
     final_params = dict(params)
     final_params["key"] = API_KEY
     url = f"{BASE_URL}/{path}"
@@ -88,11 +89,12 @@ def yt_get(path, params, sleep=0.0):
 def youtube_search(keyword, published_after, published_before,
                    region_code, max_results=50):
     """
-    검색(search.list)으로 videoId 목록 수집.
+    search.list를 사용해서 videoId 목록을 모은다.
+
     keyword: 검색어
-    published_after/before: ISO8601 UTC 시간 문자열
-    region_code: 'KR', 'US' 등의 지역 코드 (빈 문자열 가능)
-    max_results: 최종적으로 가져올 최대 비디오 수
+    published_after / published_before: ISO8601(UTC) 문자열
+    region_code: "KR", "US" 등 지역 코드 (빈 문자열이면 전체)
+    max_results: 최종적으로 가져올 목표 개수
     """
     ids = []
     fetched = 0
@@ -110,11 +112,11 @@ def youtube_search(keyword, published_after, published_before,
             "maxResults": page_size,
             "order": "relevance",
         }
-        # regionCode는 선택값이지만, 빈 문자열이면 에러 줄 수 있으므로 조건부 추가
+        # regionCode는 선택 항목. 빈 문자열이면 넣지 않는다.
         if region_code:
             query_params["regionCode"] = region_code
 
-        # pageToken이 있으면 추가
+        # 다음 페이지가 있으면 pageToken 추가
         if next_page_token:
             query_params["pageToken"] = next_page_token
 
@@ -129,18 +131,19 @@ def youtube_search(keyword, published_after, published_before,
         fetched += len(items)
         next_page_token = data.get("nextPageToken")
 
-        # 다음 페이지가 없거나 이번 페이지에서 아무 것도 못 가져왔으면 종료
+        # 다음 페이지가 없거나 더 이상 결과가 없으면 중단
         if (not next_page_token) or (len(items) == 0):
             break
 
-    # dict.fromkeys: 입력 순서를 유지하면서 중복 제거
+    # dict.fromkeys: 순서를 유지하면서 중복 제거
     return list(dict.fromkeys(ids))
 
 
 def youtube_videos_stats(video_ids):
     """
-    videos.list 로 비디오 메타데이터/통계를 DataFrame으로 변환.
-    - title, description, channelTitle, publishedAt
+    videos.list를 사용해 메타데이터/통계를 DataFrame으로 변환한다.
+    반환 컬럼 예:
+    - videoId, title, description, channelTitle, publishedAt
     - viewCount, likeCount, commentCount
     - ER(%) = (like+comment)/view * 100
     """
@@ -175,10 +178,10 @@ def youtube_videos_stats(video_ids):
     df = pd.DataFrame(rows)
 
     if not df.empty:
-        # 문자열을 시계열로 변환
+        # publishedAt을 시계열로 변환
         df["publishedAt"] = pd.to_datetime(df["publishedAt"], errors="coerce")
 
-        # ER (Engagement Rate)
+        # 참여율(ER, Engagement Rate) 계산
         df["ER(%)"] = np.where(
             df["viewCount"] > 0,
             (df["likeCount"] + df["commentCount"]) / df["viewCount"] * 100.0,
@@ -189,12 +192,12 @@ def youtube_videos_stats(video_ids):
 
 
 # -----------------------------
-# 텍스트 처리 / 키워드 분석
+# 텍스트 처리 / 키워드 추출
 # -----------------------------
 def tokenize(text: str):
     """
-    제목+설명에서 한글/영문 단어만 추출하고,
-    불용어/길이<2 단어 제거.
+    제목+설명에서 한글/영문 단어만 추출하고
+    불용어와 너무 짧은 단어는 제거한다.
     """
     tokens = TOKEN_PATTERN.findall(text.lower())
     return [
@@ -205,8 +208,8 @@ def tokenize(text: str):
 
 def keywords_from_df(df, topn=100):
     """
-    DataFrame에서 title+description을 합쳐 토큰화하고
-    상위 빈도 키워드 (topn개) 반환.
+    DataFrame에서 title+description을 모아 토큰화하고
+    상위 빈도 키워드를 (단어, 빈도) 리스트로 반환한다.
     """
     corpus = []
     for _, row in df.iterrows():
@@ -220,8 +223,8 @@ def keywords_from_df(df, topn=100):
 
 def draw_wordcloud(freqs, font_path=None):
     """
-    단어 빈도(freqs)를 기반으로 워드클라우드 그려서 matplotlib Figure 반환.
-    font_path: 한글 폰트 경로 필요 시 지정.
+    (단어, 빈도) or Counter 기반으로 워드클라우드를 그린다.
+    font_path: 한글 폰트 경로 (Cloud에는 기본 한글 폰트가 없을 수 있음)
     """
     wc = WordCloud(
         width=900,
@@ -239,13 +242,13 @@ def draw_wordcloud(freqs, font_path=None):
 
 
 # -----------------------------
-# UI - 헤더
+# UI 헤더
 # -----------------------------
 st.title("📈 유튜브 키워드 트렌드 분석기")
 st.caption("키워드/기간으로 상위 동영상을 수집해 워드클라우드와 참여율(ER)을 분석합니다.")
 
 # -----------------------------
-# UI - 사이드바 입력
+# 사이드바 입력 UI
 # -----------------------------
 with st.sidebar:
     st.subheader("검색 설정")
@@ -288,8 +291,163 @@ with st.sidebar:
         st.success("YouTube API 키 로드 완료")
     else:
         st.error("YouTube API 키가 없습니다.")
-        st.markdown("""
-**Streamlit Cloud > Manage app > Secrets** 에 아래처럼 등록하세요:
+        st.markdown(
+            "Streamlit Cloud → **Manage app → Secrets** 에 아래처럼 등록하세요:\n\n"
+            "```toml\n"
+            'YOUTUBE_API_KEY = "여기에_실제_API_KEY"\n'
+            "```\n\n"
+            "로컬(윈도우 PowerShell)에서 테스트할 경우:\n\n"
+            "```powershell\n"
+            'setx YOUTUBE_API_KEY "여기에_실제_API_KEY"\n'
+            "```\n\n"
+            "로컬(macOS / Linux)에서는:\n\n"
+            "```bash\n"
+            'export YOUTUBE_API_KEY="여기에_실제_API_KEY"\n'
+            "```"
+        )
 
-```toml
-YOUTUBE_API_KEY = "여기에_실제_API_KEY"
+    run = st.button(
+        "데이터 수집/분석 실행",
+        type="primary",
+        use_container_width=True
+    )
+
+# -----------------------------
+# 분석용 기간 계산 (UTC 기준)
+# -----------------------------
+now_utc = datetime.now(timezone.utc)
+published_after = (now_utc - timedelta(days=int(days))).isoformat()
+published_before = now_utc.isoformat()
+
+# -----------------------------
+# 실행 로직
+# -----------------------------
+if run:
+    # API 키 없으면 여기서 막고 안내
+    if not API_KEY:
+        st.warning("API 키가 없어 YouTube API 호출을 중단합니다. 키를 설정한 뒤 다시 실행해주세요.")
+        st.stop()
+
+    try:
+        with st.spinner("검색 중…"):
+            ids = youtube_search(
+                keyword=keyword,
+                published_after=published_after,
+                published_before=published_before,
+                region_code=region_code,
+                max_results=max_results
+            )
+
+        if len(ids) == 0:
+            st.warning("검색 결과가 없습니다. 키워드/기간/지역 코드를 조정해보세요.")
+        else:
+            with st.spinner("영상 메타데이터/통계 수집 중…"):
+                df = youtube_videos_stats(ids)
+
+            if df.empty:
+                st.warning("수집된 통계가 없습니다.")
+            else:
+                st.success(f"수집 완료: {len(df)}개 영상")
+
+                # KPI 카드
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("총 조회수", f"{df['viewCount'].sum():,}")
+                with c2:
+                    st.metric("평균 ER(%)", f"{df['ER(%)'].mean():.2f}")
+                with c3:
+                    st.metric("평균 댓글 수", f"{df['commentCount'].mean():.1f}")
+                with c4:
+                    st.metric("분석 기간(일)", f"{days}")
+
+                # 상위 영상 테이블 (ER 내림차순 우선, 그다음 조회수)
+                st.subheader("상위 영상 (ER 내림차순)")
+                df_sorted = df.sort_values(
+                    ["ER(%)", "viewCount"],
+                    ascending=[False, False]
+                ).reset_index(drop=True)
+
+                st.dataframe(
+                    df_sorted[[
+                        "title",
+                        "channelTitle",
+                        "viewCount",
+                        "likeCount",
+                        "commentCount",
+                        "ER(%)",
+                        "publishedAt",
+                        "videoId"
+                    ]],
+                    use_container_width=True,
+                    height=360
+                )
+
+                # 워드클라우드
+                st.subheader("워드클라우드 (제목+설명 기반)")
+                freqs = keywords_from_df(df_sorted, topn=120)
+                if len(freqs) == 0:
+                    st.info("유의미한 키워드가 부족합니다. 불용어를 줄이거나 기간/영상 수를 늘려보세요.")
+                else:
+                    fig = draw_wordcloud(
+                        freqs,
+                        font_path=font_path.strip() if font_path.strip() else None
+                    )
+                    st.pyplot(fig, clear_figure=True)
+
+                # 키워드 빈도 TOP 30
+                st.subheader("키워드 상위 빈도")
+                top_k = pd.DataFrame(freqs[:30], columns=["keyword", "freq"])
+                st.dataframe(
+                    top_k,
+                    use_container_width=True,
+                    height=400
+                )
+
+                # 참여율 vs 조회수 산포
+                st.subheader("참여율(ER%) vs 조회수")
+                st.scatter_chart(
+                    df_sorted,
+                    x="viewCount",
+                    y="ER(%)",
+                    size="commentCount",
+                    color=None
+                )
+                st.caption(
+                    "버블 크기는 댓글 수. "
+                    "ER(%) = (좋아요 수 + 댓글 수) / 조회수 × 100"
+                )
+
+                # CSV 다운로드
+                st.download_button(
+                    label="CSV 다운로드",
+                    data=df_sorted.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"yt_{keyword}_{days}d.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+    except Exception as e:
+        st.error(f"오류: {e}")
+        st.info("API 키 설정, 기간(days), 지역 코드(KR/US/JP 등), 또는 YouTube API 쿼터 상태를 다시 확인하세요.")
+
+# -----------------------------
+# 도움말 / 주의사항
+# -----------------------------
+with st.expander("도움말 / 주의사항"):
+    st.markdown(r'''
+- **ER(%)** = (likeCount + commentCount) / viewCount × 100  
+  - 일부 채널은 좋아요 수를 숨기거나 댓글을 막아 둘 수 있어서 0으로 나타날 수 있습니다.
+
+- **지역 코드(regionCode)**  
+  - `"KR"` 같이 두 글자의 국가 코드를 쓰면 지역별 검색 경향을 더 반영할 수 있습니다.
+  - 빈칸으로 두면 전세계 기준으로 가져옵니다.
+
+- **워드클라우드 한글 폰트 경로**  
+  - 예: `C:/Windows/Fonts/malgun.ttf` (로컬 Windows 환경의 맑은 고딕)
+  - Streamlit Cloud(Ubuntu 기반)에서는 기본 한글 폰트가 없을 수 있어, 직접 .ttf 경로를 제공해야 할 수 있습니다.
+
+- **쿼터 제한**  
+  - YouTube Data API v3에는 일일 쿼터가 있습니다.
+  - 너무 많은 영상을 짧은 기간에서 가져오면 403/429 계열 에러가 날 수 있습니다.
+    → 기간(days)을 늘리거나, max_results를 줄이세요.
+''')
