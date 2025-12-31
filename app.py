@@ -9,6 +9,31 @@ from collections import Counter
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import os
+import seaborn as sns
+
+
+
+@st.cache_resource
+def load_font():
+    font_path = os.path.join("fonts", "Pretendard-Regular.otf")
+    font_prop = fm.FontProperties(fname=font_path)
+    plt.rcParams["font.family"] = font_prop.get_name()
+    plt.rcParams["axes.unicode_minus"] = False
+    return font_prop
+
+font_prop = load_font()
+
+
+sns.set(font=font_prop.get_name())
+font_path = os.path.join("fonts", "Pretendard-Regular.otf")
+font_prop = fm.FontProperties(fname=font_path)
+
+plt.rcParams["font.family"] = font_prop.get_name()
+plt.rcParams["axes.unicode_minus"] = False
+
 
 # -----------------------------
 # 기본 페이지 설정
