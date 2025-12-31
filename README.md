@@ -1,5 +1,3 @@
-\https://yt-trend-fuyg9pnpq3bhsuxyash44g.streamlit.app/
-
 
 📈 YouTube 키워드 트렌드 분석기 (yt-trend)
 1. 프로젝트 개요
@@ -57,7 +55,7 @@ YouTube Data API를 활용해 키워드·기간·지역별 영상 데이터 수�
 분석 결과 CSV 다운로드 기능
 
 👉 실제 서비스 URL
-🔗 https://yt-trend-banseok-kang.streamlit.app/
+🔗 \https://yt-trend-fuyg9pnpq3bhsuxyash44g.streamlit.app/
 
 5. 핵심 인사이트
 ① 조회수 상위 콘텐츠 ≠ 참여율 상위 콘텐츠
